@@ -1,0 +1,398 @@
+---
+title: "Cross Validation"
+author: "Softanbees Technologies Pvt. Ltd"
+date: "9/29/2020"
+output: 
+    html_document:
+      toc: true
+      toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(splines)
+library(caret)
+```
+
+# What is Cross Validation?
+
+Cross Validation is a technique for evaluating ML models by training several ML models on subsets of the available input data and evaluating them on the complementary subset of the data. So let's know in depth about it by getting to know the background:
+
+## The Bias-Variance Dilemma
+
+The reason why one should care about the choice of the tuning parameter values is because these are intimately linked with the accuracy of the predictions returned by the model. A predictive model is considered good when it is capable of predicting previously unseen samples with high accuracy. The accuracy of a model's prediction is usually gauged using a **loss function.** 
+
+Distiguishing between different prediction error concepts: 
+
+* the **training error,** which is the average loss over the **training sample.**
+* the **test error,** the prediction error over an independent **test sample.**
+
+The training error gets smaller as long as the predicted responses are close to the observed responses, and will get larger if for some of the observations, the predicted and observed responses differ substantially. The training error is calculated using the training sample used to fit the model.
+
+On the contrary, we would like to assess the model’s ability to predict observations never seen during estimation. The test error provides a measure of this ability. In general, one should select the model corresponding to the lowest test error.
+
+If we simulate the situation:
+
+Below we will implement the above ideas via simulated data. We will simulate 100 training sets of size 50 from a polynomial regression model, and for each we will fit a sequence of cubic spline models with degress of freedom from 1 to 30. 
+
+```{r}
+# Generate the training and test samples
+seed <- 1809
+set.seed(seed)
+ 
+general_data <- function(n, beta, sigma_eps) {
+    eps <- rnorm(n, 0, sigma_eps)
+    x <- sort(runif(n, 0, 100))
+    X <- cbind(1, poly(x, degree = (length(beta) - 1), raw = TRUE))
+    y <- as.numeric(X %*% beta + eps)
+    
+    return(data.frame(x = x, y = y))
+}
+ 
+# Fit the models
+require(splines)
+ 
+n_rep <- 100
+n_df <- 30
+df <- 1:n_df
+beta <- c(5, -0.1, 0.004, -3e-05)
+n_train <- 50
+n_test <- 10000
+sigma_eps <- 0.5
+ 
+xy <- res <- list()
+xy_test <- general_data(n_test, beta, sigma_eps)
+for (i in 1:n_rep) {
+    xy[[i]] <- general_data(n_train, beta, sigma_eps)
+    x <- xy[[i]][, "x"]
+    y <- xy[[i]][, "y"]
+    res[[i]] <- apply(t(df), 2, function(degf) lm(y ~ ns(x, df = degf)))
+}
+
+```
+
+The next plot shows the first simulated training sample together with three fitted models corresponding to cubic splines with 1 (green line), 4 (orange line) and 25 (blue line) degrees of freedom respectively. These numbers have been chosen to show the full set of possibilities one may encounter in practice, i.e., either a model with low variability but high bias (degrees of freedom = 1), or a model with high variability but low bias (degrees of freedom = 25), or a model which tries to find a compromise between bias and variance (degrees of freedom = 4).
+
+```{r}
+# Plot the data
+x <- xy[[1]]$x
+X <- cbind(1, poly(x, degree = (length(beta) - 1), raw = TRUE))
+y <- xy[[1]]$y
+plot(y ~ x, col = "gray", lwd = 2)
+lines(x, X %*% beta, lwd = 3, col = "black")
+lines(x, fitted(res[[1]][[1]]), lwd = 3, col = "palegreen3")
+lines(x, fitted(res[[1]][[4]]), lwd = 3, col = "darkorange")
+lines(x, fitted(res[[1]][[25]]), lwd = 3, col = "steelblue")
+legend(x = "topleft", legend = c("True function", "Linear fit (df = 1)", "Best model (df = 4)", 
+    "Overfitted model (df = 25)"), lwd = rep(3, 4), col = c("black", "palegreen3", 
+    "darkorange", "steelblue"), text.width = 32, cex = 0.85)
+```
+Then, for each training sample and fitted model, We compute the corresponding test error using a large test sample generated from the same (known!) population. These are represented in the following plot together with their averages, which are shown using thicker lines3. The solid points represent the three models illustrated in the previous diagram.
+```{r}
+# Compute the training and test errors for each model
+pred <- list()
+mse <- te <- matrix(NA, nrow = n_df, ncol = n_rep)
+for (i in 1:n_rep) {
+    mse[, i] <- sapply(res[[i]], function(obj) deviance(obj)/nobs(obj))
+    pred[[i]] <- mapply(function(obj, degf) predict(obj, data.frame(x = xy_test$x)), 
+        res[[i]], df)
+    te[, i] <- sapply(as.list(data.frame(pred[[i]])), function(y_hat) mean((xy_test$y - 
+        y_hat)^2))
+}
+ 
+# Compute the average training and test errors
+av_mse <- rowMeans(mse)
+av_te <- rowMeans(te)
+ 
+# Plot the errors
+plot(df, av_mse, type = "l", lwd = 2, col = gray(0.4), ylab = "Prediction error", 
+    xlab = "Flexibilty (spline's degrees of freedom [log scaled])", ylim = c(0, 
+        1), log = "x")
+abline(h = sigma_eps, lty = 2, lwd = 0.5)
+for (i in 1:n_rep) {
+    lines(df, te[, i], col = "lightpink")
+}
+for (i in 1:n_rep) {
+    lines(df, mse[, i], col = gray(0.8))
+}
+lines(df, av_mse, lwd = 2, col = gray(0.4))
+lines(df, av_te, lwd = 2, col = "darkred")
+points(df[1], av_mse[1], col = "palegreen3", pch = 17, cex = 1.5)
+points(df[1], av_te[1], col = "palegreen3", pch = 17, cex = 1.5)
+points(df[which.min(av_te)], av_mse[which.min(av_te)], col = "darkorange", pch = 16, 
+    cex = 1.5)
+points(df[which.min(av_te)], av_te[which.min(av_te)], col = "darkorange", pch = 16, 
+    cex = 1.5)
+points(df[25], av_mse[25], col = "steelblue", pch = 15, cex = 1.5)
+points(df[25], av_te[25], col = "steelblue", pch = 15, cex = 1.5)
+legend(x = "top", legend = c("Training error", "Test error"), lwd = rep(2, 2), 
+    col = c(gray(0.4), "darkred"), text.width = 0.3, cex = 0.85)
+```
+
+One can see that the training errors decrease monotonically as the model gets more complicated (and less smooth). On the other side, even if the test error initially decreases, from a certain flexibility level on it starts increasing again. The change point occurs in correspondence of the orange model, that is, the model that provides a good compromise between bias and variance. The reason why the test error starts increasing for degrees of freedom larger than 3 or 4 is the so called overfitting problem. Overfitting is the tendency of a model to adapt too well to the training data, at the expense of generalization to previously unseen data points. In other words, an overfitted model fits the noise in the data rather than the actual underlying relationships among the variables. Overfitting usually occurs when a model is unnecessarily complex.
+
+Clearly the situation illustrated above is only ideal, because in practice:
+
+* We do not know the true model that generates the data. Indeed, our models are typically more or less mis-specified.
+
+* We do only have a limited amount of data.
+
+One way to overcome these hurdles and approximate the search for the optimal model is to use the cross-validation approach.
+
+# Details on Cross Validation 
+
+In essence, all these ideas bring us to the conclusion that it is not advisable to compare the predictive accuracy of a set of models using the same observations used for estimating the models. Therefore, for assessing the models’ predictive performance we should use an independent set of data (the test sample). Then, the model showing the lowest error on the test sample (i.e., the lowest test error) is identified as the best.
+
+## Types of Cross Validation
+
+There are different types of cross validation methods. 
+
+1. **Non-exhaustive Methods:**
+Non-exhaustive cross validation methods, as the name suggests do not not compute all ways of splitting the original data. 
+* Holdout Method
+* K- Fold Cross Validation 
+* Stratified K fold cross validation 
+
+2. **Exhaustive Methods:**
+Exhaustive cross validation methods and test on all possible ways to divide the original sample into a training and a validation set. 
+* Leave-P-Out cross validation 
+* Leave one-out cross validation 
+
+3. **Rolling Cross Validation:**
+Special Cross validation method specially designed for time series data. For time series data above mentioned model is not well fit because:
+
+1. Shuffling the data messes up the time section of the data as it will disrupt the order of events
+
+2. Using cross-validation, there is a chance that we train the model on future data and test on past data which will break the golden rule in time series i.e. “peaking in the future is not allowed”.
+
+Keeping these points in mind we perform cross validation in this manner
+
+1. We create the fold (or subsets) in a forward-chaining fashion.
+2. Suppose we have a time series for stock prices for a period of n years and we divide the data yearly into n number of folds. The folds would be created like:
+
+iteration 1: training [1], test [2]
+iteration 2: training [1 2], test [3]
+iteration 3: training [1 2 3], test [4]
+iteration 4: training [1 2 3 4], test [5]
+iteration 5: training [1 2 3 4 5], test [6]
+.
+.
+.
+iteration n: training [1 2 3 ….. n-1], test [n]
+
+
+Here as we can see in the first iteration, we train on the data of the first year and then test it on 2nd year. Similarly in the next iteration, we train the on the data of first and second year and then test on the third year of data.
+
+**Note:  It is not necessary to divide the data into years, I simply took this example to make it more understandable and easy.**
+
+## Holdout Method:
+
+### Theory
+
+Holdout method is one of the cross validation method of non-exhaustive method. 
+![](/Users/tanvir/Desktop/softanbees_files/Cross\ Validation/Holdout_method.png)
+
+This is a quite basic and simple approach in which we divide our entire dataset into two parts training data and testing data. As the name, we train the model on training data and then evaluate on the testing set. Usually, the size of training data is set more than twice that of testing data, so the data is split in the ratio of 70:30 or 80:20.
+
+In this approach, the data is first shuffled randomly before splitting. As the model is trained on a different combination of data points, the model can give different results every time we train it, and this can be a cause of instability. Also, we can never assure that the train set we picked is representative of the whole dataset.
+
+Also when our dataset is not too large, there is a high possibility that the testing data may contain some important information that we lose as we do not train the model on the testing set.
+
+The hold-out method is good to use when you have a very large dataset, you’re on a time crunch, or you are starting to build an initial model in your data science project.
+
+### Practical Implementation 
+
+Here we will see a simple example of subsetting into training and testing data using holdout method. 
+
+```{r}
+library(caTools)
+heartdata <- read.csv("heart.csv")
+str(heartdata)
+#splitting Data 
+set.seed(123)
+split = sample.split(heartdata,SplitRatio = 0.7)
+train = subset(heartdata, split == "TRUE")
+test = subset(heartdata, split == "FALSE")
+
+str(train)
+str(test)
+```
+
+Here you can see the data set is divided into training and testing section in 70-30 ration. This is holdout method. 
+
+## K-Fold Cross Validation
+
+### Theory 
+![](/Users/tanvir/Desktop/softanbees_files/Cross\ Validation/kfold.jpg)
+K-fold cross validation is one way to improve the holdout method. This method guarantees that the score of our model does not depend on the way we picked the train and test set. The data set is divided into k number of subsets and the holdout method is repeated k number of times. Let us go through this in steps:
+
+1. Randomly split your entire dataset into k number of folds (subsets)
+2. For each fold in your dataset, build your model on k – 1 folds of the dataset. Then, test the model to check the effectiveness for kth fold
+3. Repeat this until each of the k-folds has served as the test set
+4. The average of your k recorded accuracy is called the cross-validation accuracy and will serve as your performance metric for the model.
+
+Because it ensures that every observation from the original dataset has the chance of appearing in training and test set, this method generally results in a less biased model compare to other methods. It is one of the best approaches if we have limited input data. 
+
+Now the issues with this cross validation model is that it takes k number of subsets from the dataset but for a imbalance dataset it might create a big issue that all the data from one category is gathered in one subset. Then the validation will not give you the proper output. 
+
+### Practical Implementaion:
+
+The code below illustrates k-fold cross-validation using the same simulated data as above but not pretending to know the data generating process. In particular, we generate 100 observations and choose k=10. Together with the training error curve, in the plot we report both the CV and test error curves. Additionally, we provide also the standard error bars, which are the standard errors of the individual prediction error for each of the k=10 parts.
+
+```{r}
+set.seed(seed)
+n_train <- 100
+xy <- general_data(n_train, beta, sigma_eps)
+x <- xy$x
+y <- xy$y
+
+fitted_models <- apply(t(df), 2, function(degf) lm(y ~ ns(x, df = degf)))
+mse <- sapply(fitted_models, function(obj) deviance(obj)/nobs(obj))
+
+n_test <- 10000
+xy_test <- general_data(n_test, beta, sigma_eps)
+pred <- mapply(function(obj, degf) predict(obj, data.frame(x = xy_test$x)), 
+    fitted_models, df)
+te <- sapply(as.list(data.frame(pred)), function(y_hat) mean((xy_test$y - y_hat)^2))
+
+n_folds <- 12
+folds_i <- sample(rep(1:n_folds, length.out = n_train))
+cv_tmp <- matrix(NA, nrow = n_folds, ncol = length(df))
+for (k in 1:n_folds) {
+    test_i <- which(folds_i == k)
+    train_xy <- xy[-test_i, ]
+    test_xy <- xy[test_i, ]
+    x <- train_xy$x
+    y <- train_xy$y
+    fitted_models <- apply(t(df), 2, function(degf) lm(y ~ ns(x, df = degf)))
+    x <- test_xy$x
+    y <- test_xy$y
+    pred <- mapply(function(obj, degf) predict(obj, data.frame(ns(x, df = degf))), 
+        fitted_models, df)
+    cv_tmp[k, ] <- sapply(as.list(data.frame(pred)), function(y_hat) mean((y - 
+        y_hat)^2))
+}
+cv <- colMeans(cv_tmp)
+
+require(Hmisc)
+
+plot(df, mse, type = "l", lwd = 2, col = gray(0.4), ylab = "Prediction error", 
+    xlab = "Flexibilty (spline's degrees of freedom [log scaled])", main = paste0(n_folds, 
+        "-fold Cross-Validation"), ylim = c(0.1, 0.8), log = "x")
+lines(df, te, lwd = 2, col = "darkred", lty = 2)
+cv_sd <- apply(cv_tmp, 2, sd)/sqrt(n_folds)
+errbar(df, cv, cv + cv_sd, cv - cv_sd, add = TRUE, col = "steelblue2", pch = 19, 
+    lwd = 0.5)
+lines(df, cv, lwd = 2, col = "steelblue2")
+points(df, cv, col = "steelblue2", pch = 19)
+legend(x = "topright", legend = c("Training error", "Test error", "Cross-validation error"), 
+    lty = c(1, 2, 1), lwd = rep(2, 3), col = c(gray(0.4), "darkred", "steelblue2"), 
+    text.width = 0.4, cex = 0.85)
+```
+
+In the example above, the best model (that for which the CV error is minimized) uses 3 degrees of freedom, which also satisfies the requirement of the one-standard error rule.
+
+## Stratified K-fold Cross Validation 
+
+### Theory 
+![](/Users/tanvir/Desktop/softanbees_files/Cross\ Validation/Stratified-K-Fold.png)
+Using K Fold on a classification problem can be tricky. Since we are randomly shuffling the data and then dividing it into folds, chances are we may get highly imbalanced folds which may cause our training to be biased. For example, let us somehow get a fold that has majority belonging to one class(say positive) and only a few as negative class. This will certainly ruin our training and to avoid this we make stratified folds using stratification.
+
+Stratification is the process of rearranging the data so as to ensure that each fold is a good representative of the whole. For example, in a binary classification problem where each class comprises of 50% of the data, it is best to arrange the data such that in every fold, each class comprises of about half the instances.
+
+### Practical 
+
+So we will implement this cross validation using caret package in R. 
+
+```{r}
+#load data set 
+data(USArrests)
+```
+
+#### Data Exploration and Preparation
+Preparing the positive observation. For the preparation we will add a column to be the strata. In this case it is states, it can be sites, or other locations. The original data has 50 Rows. So this adds a state label to 10 consecutive obersations.
+```{r}
+USArrests$state <- c(rep(c("PA","MD","DE","NY","NJ"), each = 5))
+# this replaces the existing rownames (states) with a simple numerical index
+rownames(USArrests) <- seq(1:nrow(USArrests))
+```
+
+now for the preparation of the negative observations. Our particular problem requires positive observations from the known site locations, but a comparison to background locations that are not observed at any specific site. SO we need to simulate data b/c the USArrests data only had 50 rows. These data are simulated as random samples from a normal distribution defined by the parameters of existing data. 
+
+```{r}
+Murder <- rnorm(100, mean(USArrests$Murder), sd(USArrests$Murder))
+Assault <- rnorm(100, mean(USArrests$Assault), sd(USArrests$Assault))
+UrbanPop <- rnorm(100, mean(USArrests$UrbanPop), sd(USArrests$UrbanPop))
+Rape <- rnorm(100, mean(USArrests$Rape), sd(USArrests$Rape))
+# the strata label for these is "none", could be "background" or "control" etc..
+state <- rep("none", 100)
+# Create the modeling data as a combination of positive and negative observations
+dat <- rbind(USArrests, data.frame(Murder, Assault, UrbanPop, Rape, state))
+```
+#### Setting up CV folds
+For setting up the cross validation model we will get a list of unique state names to partition the positive observations in a way that the model is fit on data observations totally within some states, and then tests the model on data from different states.  
+```{r}
+folds <- 5
+stateSamp <- unique(USArrests$state)
+# use caret::createFolds() to split the unique states into folds, returnTrain gives the index of states to train on.
+stateCvFoldsIN <- createFolds(1:length(stateSamp), k = folds, returnTrain=TRUE)
+
+obsIndexIn <- vector("list", folds) 
+for(i in 1:length(stateCvFoldsIN)){
+  x <- which(dat$state %in%  stateSamp[stateCvFoldsIN[[i]]])
+  obsIndexIn[[i]] <- x
+}
+
+# the background observations can be drawn randomly from all background observations whos index is assigned to "noneRows"
+noneRows <- which(dat$state == "none")
+noneCvFoldsIN <- createFolds(noneRows, k = folds, returnTrain=TRUE)
+noneIndexIn <- vector("list", folds) 
+for(i in 1:length(noneCvFoldsIN)){
+  y <- noneRows[noneCvFoldsIN[[i]]]
+  noneIndexIn[[i]] <- y
+}
+# Finally, the CV folds index for positive observations is joined with the CV index of negative/background observation
+dataIndex <- mapply(c, obsIndexIn, noneIndexIn, SIMPLIFY=FALSE)
+# IMPORTANT: the list components need names (e.g. "fold1" ...) b/c Caret expects them to.  Unamed list components will fail.
+names(dataIndex) <- sapply(1:5, function(x) paste(c("fold", x), collapse=''))
+
+# Set up caret trainControl to use the CV index specified in dataIndex, method is "CV" for cross-validation, folds is folds...
+tr <- trainControl(index = dataIndex, method = "cv", number = folds)
+# Fit your model using the train() function and pass the above object "tr" as the trControl parameter
+fit <- train(Murder ~ Assault + UrbanPop + Rape, data = dat, trControl = tr, tuneLength = 2, method = "rf")
+
+# Hopefully you have a model by now.
+fit
+```
+
+## Leave-one-Out cross validation 
+### Theory:
+The case where k=n corresponds to the so called leave-one-out cross-validation (LOOCV) method. In this case the test set contains a single observation. The advantages of LOOCV are: 1) it doesn’t require random numbers to select the observations to test, meaning that it doesn’t produce different results when applied repeatedly, and 2) it has far less bias than k-fold CV because it employs larger training sets containing n−1 observations each. On the other side, LOOCV presents also some drawbacks: 1) it is potentially quite intense computationally, and 2) due to the fact that any two training sets share n−2 points, the models fit to those training sets tend to be strongly correlated with each other.
+
+### Practical 
+Now we will implement the same dataset we used for K-fold cross validation 
+```{r}
+loocv_tmp <- matrix(NA, nrow = n_train, ncol = length(df))
+for (k in 1:n_train) {
+  train_xy <- xy[-k, ]
+  test_xy <- xy[k, ]
+  x <- train_xy$x
+  y <- train_xy$y
+  fitted_models <- apply(t(df), 2, function(degf) lm(y ~ ns(x, df = degf)))
+  pred <- mapply(function(obj, degf) predict(obj, data.frame(x = test_xy$x)),
+                 fitted_models, df)
+  loocv_tmp[k, ] <- (test_xy$y - pred)^2
+}
+loocv <- colMeans(loocv_tmp)
+ 
+plot(df, mse, type = "l", lwd = 2, col = gray(.4), ylab = "Prediction error",
+     xlab = "Flexibilty (spline's degrees of freedom [log scaled])",
+     main = "Leave-One-Out Cross-Validation", ylim = c(.1, .8), log = "x")
+lines(df, cv, lwd = 2, col = "steelblue2", lty = 2)
+lines(df, loocv, lwd = 2, col = "darkorange")
+legend(x = "topright", legend = c("Training error", "10-fold CV error", "LOOCV error"),
+       lty = c(1, 2, 1), lwd = rep(2, 3), col = c(gray(.4), "steelblue2", "darkorange"),
+       text.width = .3, cex = .85)
+```
+
+So we have seen some implementation of most used cross validation methods. Among those models we generally use K-fold Cross Validation the most. 
